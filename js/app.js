@@ -36,7 +36,7 @@ function main() {
 async function scrap(url) {
     const resultContainer = document.getElementById('result-container');
     resultContainer.innerHTML = '';
-    let result = await fetch(`/scrap.php?url=${url}`);
+    let result = await fetch(`/email_scraper/scrap.php?url=${url}`);
     let jsonResult = await result.json();
     console.log(jsonResult);
     let treeRoot = document.createElement('details');

@@ -1,19 +1,19 @@
 <?php
+require_once('config.php');
+include_once('polyfill.php');
 define("EMAIL_REGEX", "/[\w][\w._]*@[\w][\w-]*(\.[\w-]+)*\.[a-zA-Z-]{2,}/");
 define("URL_REGEX", '/(https?:\/\/[\w-]+(?:\.[\w-]*[\w])*\.[a-zA-Z]{2,}[^\s"\'<]*)|((?<=href=").*?(?="))/');
 define("IGNORED_EXTENSIONS", [".dtd", ".js", ".css", ".ico", ".png", ".jpg", ".pdf"]);
-define("SCRAP_DEPTH", 3);
-define("EMAIL_LIMIT", 1000);
-define("URL_LIMIT", 10);
 
+$all_urls = [];
 $all_emails = [];
 if (isset($_GET["url"])) {
     $url = $_GET["url"];
-    if (!has_protocol($url)) {
+    if (!get_protocol($url)) {
         $url = 'http://' . $url;
     }
     $result_arr = ["url" => $url];
-    scrap_url($result_arr, "");
+    scrap_url($result_arr);
 
     $result_arr["allEmails"] = array_values(array_unique($all_emails));
     print(json_encode($result_arr));
@@ -21,7 +21,7 @@ if (isset($_GET["url"])) {
 
 $depth = 0;
 
-function scrap_url(&$url_obj, $parent_url)
+function scrap_url(&$url_obj)
 {
     global $depth, $all_emails;
     $options = stream_context_create(["http" => [
@@ -32,26 +32,22 @@ function scrap_url(&$url_obj, $parent_url)
             "User-Agent: Chrome/93\r\n"
     ]]);
     $url_to_scan = $url_obj["url"];
-    if (!has_protocol($url_to_scan)) {
-        $url_to_scan = $parent_url . $url_to_scan;
-    }
 
     $content = @file_get_contents($url_to_scan, false, $options);
     if ($content === FALSE) return;
     $emails = [];
     $urls = [];
-    preg_match_all(EMAIL_REGEX, $content, $emails);
-    preg_match_all(URL_REGEX, $content, $urls);
-    $url_obj["emails"] = array_slice($emails[0], 0, EMAIL_LIMIT);
-    array_push($all_emails, ...$url_obj["emails"]);
+    find_emails($content, $emails, EMAIL_LIMIT);
+    $url_obj["emails"] = $emails;
+    array_push($all_emails, ...$emails);
+    find_urls($content, $urls, URL_LIMIT, $url_to_scan, 'check_url');
+
     if ($depth < SCRAP_DEPTH) {
         $depth++;
-        $urls = array_filter($urls[0], "check_url");
-        $urls = array_slice($urls, 0, URL_LIMIT);
         url_wrap($urls);
         $url_obj["urls"] = $urls;
         foreach ($url_obj["urls"] as &$url) {
-            scrap_url($url, $url_to_scan);
+            scrap_url($url);
         }
         $depth--;
     }
@@ -76,7 +72,85 @@ function check_url($url)
     return true;
 }
 
-function has_protocol($url)
+function find_emails($document, &$result_arr, $limit)
 {
-    return str_starts_with($url, 'http://') || str_starts_with($url, 'https://');
+    $offset = 0;
+    for ($i = 0; $i < $limit; $i++) {
+        $matches = [];
+        if (preg_match(EMAIL_REGEX, $document, $matches, PREG_OFFSET_CAPTURE, $offset)) {
+            $email = $matches[0][0];
+            $result_arr[$i] = $email;
+            $offset = $matches[0][1] + strlen($email) + 1;
+        } else {
+            return;
+        }
+    }
+}
+
+function find_urls($document, &$result_arr, $limit, $parent_url, $check_func)
+{
+    global $all_urls;
+    $offset = 0;
+    $i = 0;
+    while ($i < $limit) {
+        $matches = [];
+        if (preg_match(URL_REGEX, $document, $matches, PREG_OFFSET_CAPTURE, $offset)) {
+            $url = $matches[0][0];
+            $offset = $matches[0][1] + strlen($url) + 1;
+            $url = full_url($url, $parent_url);
+
+            if ($check_func($url)) {
+                if (!in_array($url, $all_urls)) {
+                    array_push($all_urls, $url);
+                    $result_arr[$i] = $url;
+                    $i++;
+                }
+            }
+        } else {
+            return;
+        }
+    }
+}
+
+function full_url($url, $parent_url)
+{
+    if (str_starts_with($url, "//")) {
+        return "http:" . $url;
+    }
+    if (str_starts_with($url, "/")) {
+        return remove_path($parent_url) . $url;
+    }
+
+    if (!get_protocol($url)) {
+        return url_dir($parent_url) . $url;
+    }
+
+    return $url;
+}
+
+function get_protocol($url)
+{
+    $colon_pos = strpos($url, ":");
+    return substr($url, 0, $colon_pos);
+}
+
+function remove_path($url)
+{
+    $colon_pos = strpos($url, ":");
+    $domain_start = $colon_pos + 3;
+    $slash_pos = strpos($url, "/", $domain_start);
+    if (!$slash_pos) {
+        return substr($url, 0);
+    }
+    return substr($url, 0, $slash_pos);
+}
+
+function url_dir($url)
+{
+    $first_slash_pos = strpos($url, "/");
+    $last_slash_pos = strrpos($url, "/");
+    if ($last_slash_pos === $first_slash_pos + 1) {
+        return $url . "/";
+    }
+    return substr($url, 0, $last_slash_pos + 1);
 }
